@@ -1,0 +1,44 @@
+FROM upstage/vllm-solar-open:latest
+
+# vllm/config/model.py 의 AutoConfig.from_pretrained() 호출에
+# trust_remote_code=True 를 주입합니다.
+# 이렇게 하면 solar_open 같은 커스텀 아키텍처를 HF 모델 리포의
+# configuration_*.py 파일을 통해 동적으로 등록할 수 있습니다.
+# transformers 자체는 업그레이드하지 않습니다 (ALLOWED_LAYER_TYPES 유지).
+RUN python3 - <<'PYEOF'
+import re, pathlib, sys, glob
+
+# dist-packages 또는 site-packages 어디든 찾기
+matches = glob.glob(
+    "/usr/local/lib/python3.*/dist-packages/vllm/config/model.py"
+) + glob.glob(
+    "/usr/local/lib/python3.*/site-packages/vllm/config/model.py"
+)
+if not matches:
+    print("ERROR: vllm/config/model.py not found", file=sys.stderr)
+    sys.exit(1)
+
+p = pathlib.Path(matches[0])
+content = p.read_text()
+print(f"Patching: {p}")
+print("--- AutoConfig.from_pretrained occurrences ---")
+for i, line in enumerate(content.splitlines(), 1):
+    if "AutoConfig.from_pretrained" in line:
+        print(f"  line {i}: {line.rstrip()}")
+
+def add_trc(m):
+    inner = m.group(1)
+    if "trust_remote_code" in inner:
+        return m.group(0)
+    # 인자 끝의 공백/콤마를 보존하며 trust_remote_code=True 추가
+    return "AutoConfig.from_pretrained(" + inner.rstrip().rstrip(",") + ", trust_remote_code=True)"
+
+# [^)] 는 )가 아닌 모든 문자(개행 포함)에 매치 → 멀티라인 인자도 처리
+patched = re.sub(r"AutoConfig\.from_pretrained\(([^)]+)\)", add_trc, content)
+
+if patched != content:
+    p.write_text(patched)
+    print("Patch applied successfully.")
+else:
+    print("WARNING: nothing to patch (already patched or no calls found).")
+PYEOF
