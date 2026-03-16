@@ -244,7 +244,7 @@ async def generate_vlm_eval(row, image_description, human_a3):
 [지시사항] 기본 평가 필드와 A3 비교 필드(a3_human_score, a3_vlm_score, a3_better_translation, a3_reason)를 함께 출력하세요."""
 
     last_err = None
-    max_retries = 3
+    max_retries = 5
 
     for attempt in range(max_retries):
         try:
@@ -260,7 +260,20 @@ async def generate_vlm_eval(row, image_description, human_a3):
                 response_format={"type": "json_object"}
             )
 
+            finish_reason = response.choices[0].finish_reason
             raw_content = response.choices[0].message.content
+
+            # 모델이 길이 제한으로 중간에 끊어냈다면 즉시 재시도
+            if finish_reason == "length" and attempt < max_retries - 1:
+                await asyncio.sleep(1 + attempt)
+                continue
+
+            # content가 비어 있으면 파싱 불가이므로 재시도
+            if raw_content is None or (isinstance(raw_content, str) and not raw_content.strip()):
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(1 + attempt)
+                    continue
+                raise ValueError("Empty response content")
 
             # ⚠️ 중요: response_format=json_object일 때는 <think>가 JSON 속에만 포함될 수 있음
             # 따라서 파싱 전, 파싱 후 모두 생각을 추출해야 함
@@ -333,12 +346,6 @@ async def generate_vlm_eval(row, image_description, human_a3):
 
         except Exception as e:
             last_err = e
-            finish_reason = None
-            try:
-                finish_reason = response.choices[0].finish_reason
-            except Exception:
-                pass
-
             # JSON 절단/파싱 실패 가능성이 있으면 재시도
             if attempt < max_retries - 1:
                 await asyncio.sleep(1 + attempt)

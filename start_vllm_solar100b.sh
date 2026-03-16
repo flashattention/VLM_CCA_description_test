@@ -30,6 +30,7 @@ TP_SIZE="${TP_SIZE:-4}"
 GPU_MEMORY_UTIL="${GPU_MEMORY_UTIL:-0.92}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-8192}"
 SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-solar-100b}"
+USE_TOOL_MODE="${USE_TOOL_MODE:-0}"
 
 GPU_DEVICES="${GPU_DEVICES:-0,1,2,3}"
 # HF 캐시를 컨테이너에 마운트해 재다운로드를 방지합니다.
@@ -61,6 +62,7 @@ echo "[INFO] Model      : ${MODEL_PATH}"
 echo "[INFO] GPUs       : device=${GPU_DEVICES}  TP=${TP_SIZE}"
 echo "[INFO] Endpoint   : ${HOST}:${PORT}  served-as=${SERVED_MODEL_NAME}"
 echo "[INFO] HF cache   : ${HF_CACHE}"
+echo "[INFO] Tool mode  : ${USE_TOOL_MODE} (0=eval/json 안정화, 1=tool/reasoning parser)"
 
 # 로컬 이미지가 없으면 자동 빌드 (transformers 업그레이드 포함)
 if ! docker image inspect "${LOCAL_IMAGE}" &>/dev/null; then
@@ -78,6 +80,15 @@ fi
 DETACH=()
 [[ "${1:-}" == "start" ]] && DETACH=("-d")
 
+MODE_ARGS=()
+if [[ "${USE_TOOL_MODE}" == "1" ]]; then
+  MODE_ARGS+=(--enable-auto-tool-choice)
+  MODE_ARGS+=(--tool-call-parser solar_open)
+  MODE_ARGS+=(--reasoning-parser solar_open)
+  MODE_ARGS+=(--logits-processors "vllm.model_executor.models.parallel_tool_call_logits_processor:ParallelToolCallLogitsProcessor")
+  MODE_ARGS+=(--logits-processors "vllm.model_executor.models.solar_open_logits_processor:SolarOpenTemplateLogitsProcessor")
+fi
+
 docker run "${DETACH[@]}" \
   --name "${CONTAINER_NAME}" \
   --gpus all \
@@ -88,11 +99,7 @@ docker run "${DETACH[@]}" \
   "${LOCAL_IMAGE}" \
     "${MODEL_PATH}" \
     --trust-remote-code \
-    --enable-auto-tool-choice \
-    --tool-call-parser solar_open \
-    --reasoning-parser solar_open \
-    --logits-processors "vllm.model_executor.models.parallel_tool_call_logits_processor:ParallelToolCallLogitsProcessor" \
-    --logits-processors "vllm.model_executor.models.solar_open_logits_processor:SolarOpenTemplateLogitsProcessor" \
+    "${MODE_ARGS[@]}" \
     --host "${HOST}" \
     --port "${PORT}" \
     --dtype bfloat16 \
